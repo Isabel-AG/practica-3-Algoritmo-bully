@@ -3,10 +3,11 @@
 Implementacion en C del algoritmo del abuson 
 
 ## Compilacion 
-
+```bash
 mpicc -o practica3 Practica3.c
 
 mpicc -Wall -Wextra -g -o practica3 Practica3.c
+```
 
 ## Ejecucion con --oversubscribed
 ### Con 4 procesos (maximo 1 nodo caido)
