@@ -6,12 +6,25 @@
 #include <time.h>
 #include <unistd.h>
 
-#define TAG_LIDER 20 // anunciar lider elegido 
-#define TAG_ELECCION 30 // mensaje de eleccion
-#define TAG_OK 40 // respuesta OK
+#define COORDINADOR 20 // anunciar lider elegido 
+#define MENSAJE 30 // mensaje de eleccion
 
-// marca a un nodo como inactivo si es el ultimo nodo o con seleccionado aleatoriamente
-int nodo_inactivo(int id, int total){
+double simula_sleep(int tiempo){
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    double duracion_simulada = (double)tiempo; 
+    while(1){
+        clock_gettime(CLOCK_MONOTONIC, &end);
+        double transcurrido = end.tv_sec - start.tv_sec + (end.tv_nsec - start.tv_nsec)/1e9;
+        if(transcurrido >= duracion_simulada){
+            break;
+        }
+    }
+    return duracion_simulada;
+}
+
+// Función para determinar si un nodo está caído (similar a nodo_inactivo)
+int nodo_caido(int id, int total){
     int estado = 0;
     if(id == total - 1){
         estado = 1;
@@ -24,106 +37,110 @@ int nodo_inactivo(int id, int total){
     return estado;
 }
 
-// obtener retardo segun estado del nodo
-int obtener_retardo(int inactivo){
-    return (inactivo) ? 5 : 2;
+// Función para obtener el timeout basado en si el nodo está caído
+int timeout(int rank, int caido){
+    return (caido) ? 5 : 2;
 }
 
-// obtener y calcuar tiempo transcurrido
-void espera_activa(int segundos){
-    struct timespec ini, fin;
-    clock_gettime(CLOCK_MONOTONIC, &ini);
-    while(1){
-        clock_gettime(CLOCK_MONOTONIC, &fin);
-        double trans = (fin.tv_sec - ini.tv_sec) + (fin.tv_nsec - ini.tv_nsec)/1e9;
-        if(trans >= segundos) break;
-    }
-}
-
-// funcion principal
 int main(int argc, char** argv){
 
-    int total, id;
+    int size, rank;
     MPI_Init(&argc, &argv);
-    MPI_Comm_size(MPI_COMM_WORLD, &total);
-    MPI_Comm_rank(MPI_COMM_WORLD, &id);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 
-    srand(time(NULL) + id);
+    srand((unsigned int) time (NULL)+rank*31);
 
-    int inactivo = nodo_inactivo(id, total);
-    int retardo = obtener_retardo(inactivo);
-    int lider = -1;
+    int caido = nodo_caido(rank, size);
+    int tiempo = timeout(rank, caido);
+    int coordinador = -1;
 
-    // Imprimir los nodos caidos (no participan) 
-    if(inactivo){
-        printf("[Nodo %d] Estado: CAIDO - No participa en comunicacion\n", id);
-        MPI_Finalize();
-        return 0;
+    double tiempo_dormido = simula_sleep(tiempo);
+    printf("[Nodo %d] Dormido por %d segundos (caido = %d, timeout=%d)\n", rank, tiempo, caido, tiempo);
+    fflush(stdout);
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    // inciamos las comunicaciones 
+    for (int i = rank - 1; i >= 0; i--){
+        // enviamos retrasos de red 
+        simula_sleep(0); 
+        MPI_Send(&tiempo, 1, MPI_INT, i, MENSAJE , MPI_COMM_WORLD);
     }
 
-    MPI_Status st;
+    int bully = (caido) ? 0 : 1;
+    MPI_Status status; 
 
-    int soy_candidato = 1; // Inicialmente todos son candidatos
+    // Esperar mensajes de nodos con rango superior 
+    for(int j = rank + 1; j < size; j++){
+        int recibido = 0; 
+        int flag = 0; 
+        double waited = 0.0; 
+        int remote_timeout =1; 
 
-    // Enviar mensajes de elección a nodos con mayor ID
-    for(int destino = id + 1; destino < total; destino++){
-        MPI_Send(&id, 1, MPI_INT, destino, TAG_ELECCION, MPI_COMM_WORLD);
-        
-        // Implementar timeout con MPI_Irecv
-        MPI_Request request;
-        int respuesta;
-        MPI_Irecv(&respuesta, 1, MPI_INT, destino, TAG_OK, MPI_COMM_WORLD, &request);
-        
-        // Esperar respuesta con timeout de 3 segundos
-        int flag = 0;
-        time_t inicio = time(NULL);
-        while(!flag && (time(NULL) - inicio) < 3){
-            MPI_Test(&request, &flag, MPI_STATUS_IGNORE);
-            usleep(100000); // 0.1 segundos
+        // esperar a remote_timeout si el nodo emisor tiene timeout 
+        // como no se conoce el timeout hasta recibirlo, usamos el limite de maxima espera simulada por el nodo
+
+        const int MAX_WAIT = 7;
+        while (waited < MAX_WAIT){
+            MPI_Iprobe(j, MENSAJE, MPI_COMM_WORLD, &flag, &status);
+            if (flag){
+                MPI_Recv(&remote_timeout, 1, MPI_INT, j, MENSAJE, MPI_COMM_WORLD, &status);
+                recibido = 1;
+                break;
+            } 
+
+            simula_sleep(1); 
+            waited += 1.0;
         }
         
-        if(!flag){
-            MPI_Cancel(&request);
-            // Si el nodo no responde es porque esta caido 
+        if(!recibido){
+            // No llegó el mensaje del nodo dentro del máximo simulado, por lo que se toma como caído 
+            // esto se considera para ser bully si no hay respuestas válidas 
+            continue; 
         } else {
-            // Si recibio respuesta no puede ser lider 
-            soy_candidato = 0;
-        }
-    }
-
-    // mensajes de eleccion de nodos con menor ID 
-    for(int origen = 0; origen < id; origen++){
-        int hay_mensaje;
-        MPI_Status status;
-        
-        // Verificar si hay mensaje de elección
-        MPI_Iprobe(origen, TAG_ELECCION, MPI_COMM_WORLD, &hay_mensaje, &status);
-        if(hay_mensaje){
-            int id_emisor;
-            MPI_Recv(&id_emisor, 1, MPI_INT, origen, TAG_ELECCION, MPI_COMM_WORLD, &status);
-            
-            // Responder con OK ya el del nodo ID es mayor
-            int ok = 1;
-            MPI_Send(&ok, 1, MPI_INT, origen, TAG_OK, MPI_COMM_WORLD);
-        }
-    }
-
-    // Anunciar líder si es candidato
-    if(soy_candidato){
-        lider = id;
-        printf("[Nodo %d] Ahora soy el líder\n", id);
-        for(int p = 0; p < total; p++){
-            if(p != id){  // No enviarse a sí mismo
-                MPI_Send(&lider, 1, MPI_INT, p, TAG_LIDER, MPI_COMM_WORLD);
+            if(remote_timeout <= 3){
+                bully = 0; // hay un nodo activo con timeout menor 
+                break;
             }
         }
     }
-    else { // Esperar anuncio del líder
-        MPI_Recv(&lider, 1, MPI_INT, MPI_ANY_SOURCE, TAG_LIDER, MPI_COMM_WORLD, &st);
-    }
 
-    if(!inactivo){ // Solo los nodos activos imprimen el estado final
-        printf("[Nodo %d] Estado: VIVO, Líder elegido: %d\n", id, lider);
+    if(bully){
+        printf("[Nodo %d] Soy el nuevo coordinador\n", rank);
+        coordinador = rank;
+        for (int i = 0; i < size; i++){
+            if(i != rank){
+                MPI_Send(&coordinador, 1, MPI_INT, i, COORDINADOR, MPI_COMM_WORLD);
+            }
+        }
+        
+    } else {
+        int aux = -1; 
+        for (int i = 0; i < size; i++){
+            MPI_Send(&aux, 1, MPI_INT, i, COORDINADOR, MPI_COMM_WORLD);
+        }
+
+        // recibimos respuestas 
+        int respuesta_recibida = 0; 
+        const int MAX_WAIT_COORD = 7; 
+        double waited_coord = 0.0;
+
+        while (!respuesta_recibida && waited_coord < MAX_WAIT_COORD){
+            int flag = 0;
+            MPI_Iprobe(MPI_ANY_SOURCE, COORDINADOR, MPI_COMM_WORLD, &flag, &status);
+            if (flag){
+                int respuesta = -1; 
+                MPI_Recv(&respuesta, 1, MPI_INT, status.MPI_SOURCE, COORDINADOR, MPI_COMM_WORLD, &status);
+                if(respuesta != -1){
+                    coordinador = respuesta;
+                    respuesta_recibida = 1;
+                    printf("[Nodo %d] El nuevo coordinador es el nodo %d\n", rank, coordinador);
+                    break;
+                }
+            } 
+            waited_coord += 1.0;
+        }
     }
 
     MPI_Finalize();
