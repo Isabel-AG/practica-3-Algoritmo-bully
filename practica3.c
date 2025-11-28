@@ -141,8 +141,10 @@ int main(int argc, char **argv)
 
         // recibimos respuestas
         int respuesta_recibida = 0;
+        const int MAX_WAIT_COORD = 10000; // Tiempo máximo de espera
+        int waited_coord = 0;
 
-        while (!respuesta_recibida)
+        while (!respuesta_recibida && waited_coord < MAX_WAIT_COORD)
         {
             int flag = 0;
             MPI_Iprobe(MPI_ANY_SOURCE, COORDINADOR, MPI_COMM_WORLD, &flag, &status);
@@ -158,6 +160,9 @@ int main(int argc, char **argv)
                     break;
                 }
             }
+            // dormir un tiempo real para dar oportunidad a que lleguen mensajes
+            usleep(1000); // 1 ms
+            waited_coord += 1;
         }
     }
 
