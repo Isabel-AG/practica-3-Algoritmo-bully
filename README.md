@@ -4,9 +4,8 @@ Implementacion en C del algoritmo del abuson
 
 ## Compilacion 
 ```bash
-mpicc -o practica3 Practica3.c
-
-mpicc -Wall -Wextra -g -o practica3 Practica3.c
+mpicc -o practica3 practica3.c
+mpicc -Wall -Wextra -g -o practica3 practica3.c
 ```
 
 ## Ejecucion con --oversubscribed

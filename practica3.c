@@ -10,14 +10,14 @@
 #define TAG_ELECCION 30 // mensaje de eleccion
 #define TAG_OK 40 // respuesta OK
 
-// marca a un nodo como inactivo si es el ultimo nodo o con seleccionado aleatoriamente
+// marca a un nodo como inactivo si es el ultimo nodo o es seleccionado aleatoriamente
 int nodo_inactivo(int id, int total){
     int estado = 0;
     if(id == total - 1){
         estado = 1;
     } else {
         double r = (double) rand() / RAND_MAX;
-        if(r <= 0.20){
+        if(r <= 0.20){ // Escoge con un quinto de 
             estado = 1;
         }
     }
